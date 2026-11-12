@@ -50,8 +50,10 @@ jobs:
           git -C src sparse-checkout set --no-cone '/content/video-hosts.yaml' '/content/*/subject.yaml' '/content/*/*/*/unit.yaml'
           pip install -q pyyaml
           python3 scripts/plan.py src > plan.txt
-          awk '{print "/" $1}' plan.txt | xargs git -C src sparse-checkout add --no-cone
           echo "$(wc -l < plan.txt) videos"
+          if [ -s plan.txt ]; then
+            awk '{print "/" $1}' plan.txt | git -C src sparse-checkout add --stdin
+          fi
       - name: Build site
         if: steps.check.outputs.changed == 'true'
         run: |
