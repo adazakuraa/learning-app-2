@@ -1,0 +1,84 @@
+name: Publish videos
+
+# Copies the MP4s of the subjects listed in learning-app's content/video-hosts.yaml
+# (from its main branch) into this GitHub Pages site as videos/<unit-id>.mp4.
+# Runs hourly and does nothing unless learning-app's main branch has changed since the last
+# publish. Run it by hand ("Run workflow") right after merging into learning-app to publish at once.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: adazakuraa/learning-app
+  SITE_URL: https://adazakuraa.github.io/learning-app-2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Has learning-app main changed since the last publish?
+        id: check
+        run: |
+          head=$(git ls-remote "https://github.com/$SOURCE_REPO" refs/heads/main | cut -f1)
+          live=$(curl -sf "$SITE_URL/version.txt" | head -1 || true)
+          echo "source main: $head / published: ${live:-none}"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          if [ "$head" = "$live" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Fetch videos from learning-app (only the files needed)
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse "https://github.com/$SOURCE_REPO" src
+          git -C src sparse-checkout set --no-cone '/content/video-hosts.yaml' '/content/*/subject.yaml' '/content/*/*/*/unit.yaml'
+          pip install -q pyyaml
+          python3 scripts/plan.py src > plan.txt
+          awk '{print "/" $1}' plan.txt | xargs git -C src sparse-checkout add --no-cone
+          echo "$(wc -l < plan.txt) videos"
+      - name: Build site
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          mkdir -p site/videos
+          while read -r file id; do cp "src/$file" "site/videos/$id.mp4"; done < plan.txt
+          echo "${{ steps.check.outputs.head }}" > site/version.txt
+          cp index.html site/
+          size=$(du -sm site | cut -f1)
+          echo "site size: ${size} MB"
+          if [ "$size" -gt 980 ]; then
+            echo "::error::site is ${size} MB; GitHub Pages allows 1 GB. Move a subject back to learning-app in content/video-hosts.yaml."
+            exit 1
+          fi
+          [ "$size" -gt 850 ] && echo "::warning::site is ${size} MB of the 1 GB limit"
+          true
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.check.outputs.changed == 'true'
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
